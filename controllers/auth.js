@@ -1,91 +1,184 @@
-const User = require('../models/User');
-const { StatusCodes } = require('http-status-codes');
-const asyncWrapper = require('../middleware/async'); // centralized error handling
-const { BadRequestError, UnauthenticatedError, NotFoundError } = require('../errors');
+const User = require("../models/User");
+const { StatusCodes } = require("http-status-codes");
+const jwt = require("jsonwebtoken");
+const asyncWrapper = require("../middleware/async");
+const { BadRequestError, UnauthenticatedError, NotFoundError } = require("../errors");
+const mongoose = require("mongoose");
 
-// ================= Register new user =================
-const register = asyncWrapper(async (req, res) => {
-  const role = req.body.role || "csr"; // default CSR
-  const user = await User.create({
-    name: req.body.name,
-    email: req.body.email,
-    password: req.body.password,
-    lastName: req.body.lastName,
-    location: req.body.location,
-    role
-  });
-  const token = user.createJWT();
-  res.status(StatusCodes.CREATED).json({
-    user: {
-      email: user.email,
-      lastName: user.lastName,
-      location: user.location,
-      name: user.name,
+// ================= JWT HELPER =================
+const createJWT = (user) => {
+  return jwt.sign(
+    {
+      userId: user._id,
       role: user.role,
-      token,
+      name: user.name,
+      email: user.email,
     },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: process.env.JWT_LIFETIME || "1d",
+    }
+  );
+};
+
+// ================= FIRST ADMIN SIGNUP =================
+const firstAdminSignup = asyncWrapper(async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    throw new BadRequestError("Please provide name, email and password");
+  }
+  const adminExists = await User.findOne({ role: "admin" });
+  if (adminExists) {
+    throw new BadRequestError("Admin already exists. Please login.");
+  }
+  const user = await User.create({
+    name,
+    email: email.toLowerCase(),
+    password,
+    role: "admin",
+    status: "active",
+  });
+  const token = createJWT(user);
+  res.status(StatusCodes.CREATED).json({
+    success: true,
+    token,
+    user: { _id: user._id, name: user.name, email: user.email, role: user.role, status: "active" },
   });
 });
 
-// ================= Login existing user =================
+// ================= REGISTER (ADMIN ONLY) =================
+const register = asyncWrapper(async (req, res) => {
+  if (req.user.role !== "admin") {
+    throw new UnauthenticatedError("Only admin can create users");
+  }
+  const { name, email, password, role = "csr" } = req.body;
+  if (!name || !email || !password) {
+    throw new BadRequestError("Please provide all values");
+  }
+  const emailExists = await User.findOne({ email: email.toLowerCase() });
+  if (emailExists) {
+    throw new BadRequestError("Email already in use");
+  }
+  const user = await User.create({
+    name,
+    email: email.toLowerCase(),
+    password,
+    role: role.toLowerCase(),
+    status: "active",
+  });
+  res.status(StatusCodes.CREATED).json({
+    success: true,
+    msg: "User created successfully",
+    user: { _id: user._id, name: user.name, status: user.status }
+  });
+});
+
+// ================= LOGIN =================
 const login = asyncWrapper(async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
-    throw new BadRequestError('Please provide email and password');
+    throw new BadRequestError("Please provide email and password");
   }
-
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email: email.toLowerCase() });
   if (!user) {
-    throw new UnauthenticatedError('Invalid Credentials');
+    throw new UnauthenticatedError("Invalid Credentials");
   }
 
-  const isPasswordCorrect = await user.comparePassword(password);
-  if (!isPasswordCorrect) {
-    throw new UnauthenticatedError('Invalid Credentials');
+  // Strict Block for deactivated CSRs
+  if (user.role === "csr" && user.status === "inactive") {
+    throw new UnauthenticatedError("Your account has been deactivated. Please contact Admin.");
   }
 
-  const token = user.createJWT();
+  const isMatch = await user.comparePassword(password);
+  if (!isMatch) {
+    throw new UnauthenticatedError("Invalid Credentials");
+  }
+  const token = createJWT(user);
   res.status(StatusCodes.OK).json({
-    user: {
-      email: user.email,
-      lastName: user.lastName,
-      location: user.location,
-      name: user.name,
-      role: user.role,
-      token,
-    },
+    success: true,
+    token,
+    user: { _id: user._id, name: user.name, email: user.email, role: user.role, status: user.status || "active" },
   });
 });
 
-// ================= Update existing user =================
-const updateUser = asyncWrapper(async (req, res) => {
-  const { email, name, lastName, location } = req.body;
-  if (!email || !name || !lastName || !location) {
-    throw new BadRequestError('Please provide all values');
+// ================= UPDATE STATUS (THE ULTIMATE FIX) =================
+const updateStatus = asyncWrapper(async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  console.log(`\n--- [SYNC REQUEST RECEIVED] ---`);
+  console.log(`Agent ID: ${id}`);
+  console.log(`Requested Status: ${status}`);
+
+  // 1. Data Cleaning
+  const targetStatus = status?.toLowerCase().trim();
+  if (!["active", "inactive"].includes(targetStatus)) {
+    console.log(`[!] REJECTED: Invalid Status: ${status}`);
+    throw new BadRequestError("Invalid status. Expected 'active' or 'inactive'");
   }
 
-  const user = await User.findOne({ _id: req.user.userId });
-  if (!user) throw new NotFoundError('User not found');
+  // 2. Security Check
+  if (req.user.role !== "admin") {
+    throw new UnauthenticatedError("Access Denied: Admin only.");
+  }
 
-  user.email = email;
-  user.name = name;
-  user.lastName = lastName;
-  user.location = location;
+  // 3. Smart ID Mapping (Handles MongoDB ID or Custom CSR ID)
+  const isValidObjectId = mongoose.Types.ObjectId.isValid(id);
+  const searchCriteria = {
+    $or: [
+      ...(isValidObjectId ? [{ _id: id }] : []),
+      { csrId: id }
+    ],
+    role: { $ne: "admin" } // Safety: Never let this API touch an admin
+  };
+
+  // 4. Atomic Update
+  const user = await User.findOneAndUpdate(
+    searchCriteria,
+    { $set: { status: targetStatus } },
+    { new: true, runValidators: true }
+  );
+
+  if (!user) {
+    console.log(`[!] FAILED: User not found with ID: ${id}`);
+    throw new NotFoundError(`Agent with ID ${id} not found.`);
+  }
+
+  console.log(`[✓] SUCCESS: ${user.name} is now: ${user.status}`);
+  console.log(`--- [SYNC END] ---\n`);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    msg: `Status successfully updated to ${user.status}`,
+    user: { _id: user._id, csrId: user.csrId, status: user.status },
+  });
+});
+
+// ================= UPDATE PROFILE =================
+const updateUser = asyncWrapper(async (req, res) => {
+  const { name, email, password } = req.body;
+  const user = await User.findById(req.user.userId);
+  if (!user) throw new UnauthenticatedError("User not found");
+
+  if (email && email.toLowerCase() !== user.email) {
+    const emailExists = await User.findOne({ email: email.toLowerCase() });
+    if (emailExists) throw new BadRequestError("Email already in use");
+    user.email = email.toLowerCase();
+  }
+  if (name) user.name = name;
+  if (password) user.password = password;
 
   await user.save();
-  const token = user.createJWT();
-
   res.status(StatusCodes.OK).json({
-    user: {
-      email: user.email,
-      lastName: user.lastName,
-      location: user.location,
-      name: user.name,
-      role: user.role,
-      token,
-    },
+    success: true,
+    user: { _id: user._id, name: user.name, email: user.email, role: user.role, status: user.status || "active" },
   });
 });
 
-module.exports = { register, login, updateUser };
-
+module.exports = {
+  firstAdminSignup,
+  register,
+  login,
+  updateUser,
+  updateStatus
+};
