@@ -1,224 +1,249 @@
+const mongoose = require("mongoose");
+const xlsx = require("xlsx");
 const Lead = require("../models/leads.js");
+const Sale = require("../models/Sale.js");
+const asyncWrapper = require("../middleware/async");
+const { BadRequestError, NotFoundError, UnauthenticatedError } = require("../errors");
 
-// Create a new lead
-const createLead = async (req, res) => {
-	try {
-		const lead = await Lead.create(req.body);
-		res.status(201).json({
-			success: true,
-			msg: "Lead created successfully",
-			data: lead,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in creating lead",
-			error: error.message,
-		});
-	}
-};
+// 1. Get all leads (Admin Only)
+const getAllLeads = asyncWrapper(async (req, res) => {
+	const leads = await Lead.find({})
+		.populate("assignedTo", "name email role")
+		.sort({ createdAt: -1 });
 
-// Get leads assigned to logged-in CSR
-const getLeads = async (req, res) => {
-	try {
-		const csrId = req.user.userId;
-		const leads = await Lead.find({ assignedTo: csrId });
-		res.status(200).json({
-			success: true,
-			msg: "Leads fetched successfully",
-			data: leads,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in fetching leads",
-			error: error.message,
-		});
-	}
-};
+	res.status(200).json({
+		success: true,
+		count: leads.length,
+		data: leads
+	});
+});
 
-// Get leads filtered by date (day/week/month)
-const getLeadsByDate = async (req, res) => {
-	const csrId = req.user.userId;
-	const { filter } = req.query;
-
-	let startDate;
-	const now = new Date();
-
-	switch (filter) {
-		case "day":
-			startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-			break;
-		case "week":
-			const firstDayOfWeek = now.getDate() - now.getDay(); // Sunday = 0
-			startDate = new Date(now.getFullYear(), now.getMonth(), firstDayOfWeek);
-			break;
-		case "month":
-			startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-			break;
-		default:
-			return res.status(400).json({
-				success: false,
-				msg: "Invalid filter. Use day, week, or month.",
-			});
-	}
-
-	try {
-		const leads = await Lead.find({
-			assignedTo: csrId,
-			createdAt: { $gte: startDate },
-		});
-		res.status(200).json({
-			success: true,
-			msg: `Leads fetched successfully for ${filter}`,
-			data: leads,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in fetching leads by date",
-			error: error.message,
-		});
-	}
-};
-
-// Get single lead by ID
-const getSingleLead = async (req, res) => {
-	const id = req.params.id;
-	try {
-		const lead = await Lead.findById(id);
-		res.status(200).json({
-			success: true,
-			msg: "Lead fetched successfully",
-			data: lead,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in fetching lead",
-			error: error.message,
-		});
-	}
-};
-
-// Delete lead by ID
-const deleteLead = async (req, res) => {
-	const id = req.params.id;
-	try {
-		const lead = await Lead.findByIdAndDelete(id);
-		res.status(200).json({
-			success: true,
-			msg: "Lead deleted successfully",
-			data: lead,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in deleting lead",
-			error: error.message,
-		});
-	}
-};
-
-
-const updateLead = async (req, res) => {
-	const id = req.params.id;
-	try {
-		const lead = await Lead.findByIdAndUpdate(id, req.body, {
-			new: true,
-			runValidators: true,
-		});
-		res.status(200).json({
-			success: true,
-			msg: "Lead updated successfully",
-			data: lead,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in updating lead",
-			error: error.message,
-		});
-	}
-};
-
-
-const updateLeadStatus = async (req, res) => {
-	const id = req.params.id;
-	const { status } = req.body;
-
-	try {
-		const lead = await Lead.findByIdAndUpdate(
-			id,
-			{ status },
-			{ new: true, runValidators: true }
-		);
-		res.status(200).json({
-			success: true,
-			msg: "Lead status updated successfully",
-			data: lead,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in updating lead status",
-			error: error.message,
-		});
-	}
-};
-
-
-const getAllLeads = async (req, res) => {
-	try {
-		if (req.user.role !== "admin") {
-			return res.status(403).json({
-				success: false,
-				msg: "Access denied. Admins only.",
-			});
-		}
-
-		const leads = await Lead.find({});
-		res.status(200).json({
-			success: true,
-			msg: "All leads fetched successfully",
-			data: leads,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in fetching all leads",
-			error: error.message,
-		});
-	}
-};
-
-const getLeadsByCSR = async (req, res) => {
+// 2. Get leads by CSR (Used by Admin Sidebar)
+const getLeadsByCSR = asyncWrapper(async (req, res) => {
 	const { csrId } = req.params;
 
-	try {
-		const leads = await Lead.find({ assignedTo: csrId });
-		res.status(200).json({
-			success: true,
-			msg: `Leads fetched successfully for CSR: ${csrId}`,
-			data: leads,
-		});
-	} catch (error) {
-		res.status(400).json({
-			success: false,
-			msg: "Error occurred in fetching leads by CSR",
-			error: error.message,
-		});
+	if (!mongoose.Types.ObjectId.isValid(csrId)) {
+		throw new BadRequestError("Invalid CSR ID");
 	}
-};
+
+	const leads = await Lead.find({ assignedTo: csrId })
+		.populate("assignedTo", "name email role")
+		.sort({ createdAt: -1 });
+
+	res.status(200).json({ success: true, count: leads.length, data: leads });
+});
+
+// 3. Smart Get Leads (FIXED: Ab yeh Date Filters handle karega)
+const getLeads = asyncWrapper(async (req, res) => {
+	const { search, filter, start, end } = req.query;
+
+	let query = {};
+
+	// Role based filtering
+	if (req.user.role === "csr") {
+		query.assignedTo = req.user.userId;
+	}
+
+	// Search logic
+	if (search) {
+		query.$or = [
+			{ name: { $regex: search, $options: "i" } },
+			{ phone: { $regex: search, $options: "i" } },
+			{ course: { $regex: search, $options: "i" } },
+			{ city: { $regex: search, $options: "i" } }
+		];
+	}
+
+	// Date Filtering Logic (Added to sync with Dashboard)
+	if (filter) {
+		const now = new Date();
+		if (filter === "day") {
+			const today = new Date();
+			today.setHours(0, 0, 0, 0);
+			query.createdAt = { $gte: today };
+		} else if (filter === "week") {
+			const lastWeek = new Date();
+			lastWeek.setDate(now.getDate() - 7);
+			query.createdAt = { $gte: lastWeek };
+		} else if (filter === "month") {
+			const lastMonth = new Date();
+			lastMonth.setMonth(now.getMonth() - 1);
+			query.createdAt = { $gte: lastMonth };
+		} else if (filter === "custom" && start && end) {
+			query.createdAt = {
+				$gte: new Date(new Date(start).setHours(0, 0, 0, 0)),
+				$lte: new Date(new Date(end).setHours(23, 59, 59, 999))
+			};
+		}
+	}
+
+	const leads = await Lead.find(query)
+		.populate("assignedTo", "name email role")
+		.sort({ createdAt: -1 });
+
+	res.status(200).json({ success: true, count: leads.length, data: leads });
+});
+
+// 4. Get leads by date
+const getLeadsByDate = asyncWrapper(async (req, res) => {
+	const { filter } = req.query;
+	const now = new Date();
+	let startDate = new Date();
+
+	if (filter === "day") startDate.setHours(0, 0, 0, 0);
+	else if (filter === "week") startDate.setDate(now.getDate() - 7);
+	else if (filter === "month") startDate.setMonth(now.getMonth() - 1);
+	else throw new BadRequestError("Invalid filter. Use day, week, or month.");
+
+	let query = { createdAt: { $gte: startDate } };
+	if (req.user.role === "csr") query.assignedTo = req.user.userId;
+
+	const leads = await Lead.find(query).populate("assignedTo", "name email role");
+
+	res.status(200).json({ success: true, count: leads.length, data: leads });
+});
+
+// 5. Convert Lead to Sale (Fixed: Transactions Removed for Local MongoDB)
+const convertLeadToSale = asyncWrapper(async (req, res) => {
+	const { amount, remarks, paymentMethod } = req.body;
+	const { id } = req.params;
+
+	if (!amount || amount <= 0) throw new BadRequestError("Valid amount is required");
+
+	const lead = await Lead.findById(id);
+	if (!lead) throw new NotFoundError("Lead not found");
+
+	const normalizedStatus = lead.status.toLowerCase();
+	if (normalizedStatus === 'sale' || normalizedStatus === 'paid') {
+		throw new BadRequestError("Lead already converted");
+	}
+
+	const sale = await Sale.create({
+		lead: lead._id,
+		csr: lead.assignedTo,
+		amount: Number(amount),
+		course: lead.course,
+		remarks: remarks || "Direct conversion",
+		paymentMethod: paymentMethod || "Bank Transfer"
+	});
+
+	const updatedLead = await Lead.findByIdAndUpdate(id, {
+		status: "paid",
+		saleAmount: Number(amount),
+		convertedAt: Date.now(),
+		lastUpdatedBy: req.user.userId
+	}, { new: true });
+
+	res.status(201).json({
+		success: true,
+		message: "Sale record created successfully",
+		data: sale
+	});
+});
+
+// 6. Bulk Insert Excel
+const bulkInsertLeads = asyncWrapper(async (req, res) => {
+	if (!req.file) throw new BadRequestError("No file uploaded");
+	const { csrId } = req.body;
+	if (!csrId) throw new BadRequestError("Please select a CSR to assign leads");
+
+	const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+	const jsonData = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+	const leadsToInsert = jsonData.map(row => ({
+		name: (row.Name || row.name || "Unknown").trim(),
+		phone: String(row.Phone || row.phone || "").replace(/[^\d+]/g, ""),
+		course: (row.Course || row.course || "General").trim(),
+		assignedTo: csrId,
+		createdBy: req.user.userId,
+		city: (row.City || row.city || "Unknown").trim(),
+		source: (row.Source || row.source || "excel").toLowerCase(),
+		status: "new"
+	})).filter(l => l.phone.length >= 10);
+
+	if (leadsToInsert.length === 0) throw new BadRequestError("No valid leads found in file");
+
+	const result = await Lead.insertMany(leadsToInsert, { ordered: false });
+	res.status(201).json({ success: true, count: result.length });
+});
+
+// 7. Create Lead
+const createLead = asyncWrapper(async (req, res) => {
+	const { name, phone, course, assignedTo, status, remarks, city, source, followUpDate } = req.body;
+
+	const creatorId = req.user?.userId || req.user?.id;
+	if (!creatorId) throw new UnauthenticatedError("Session expired. Please login again.");
+
+	const cleanPhone = phone ? String(phone).replace(/[^\d+]/g, "") : "";
+
+	const leadData = {
+		name: name?.trim(),
+		phone: cleanPhone,
+		course: course || "General",
+		assignedTo: assignedTo,
+		createdBy: creatorId,
+		status: status?.toLowerCase() || "new",
+		remarks: remarks || "",
+		city: city || "Unknown",
+		source: source || "manual",
+		followUpDate: followUpDate || null
+	};
+
+	if (!leadData.name) throw new BadRequestError("Lead name is required");
+	if (leadData.phone.length < 10) throw new BadRequestError("Valid 10-digit phone number is required");
+	if (!leadData.assignedTo) throw new BadRequestError("Lead must be assigned to an agent");
+
+	const lead = await Lead.create(leadData);
+	res.status(201).json({ success: true, data: lead });
+});
+
+// 8. Update Lead
+const updateLead = asyncWrapper(async (req, res) => {
+	const updateData = { ...req.body };
+
+	if (updateData.status) updateData.status = updateData.status.toLowerCase();
+	if (updateData.phone) updateData.phone = String(updateData.phone).replace(/[^\d+]/g, "");
+
+	updateData.lastUpdatedBy = req.user.userId;
+
+	const lead = await Lead.findByIdAndUpdate(req.params.id, updateData, {
+		new: true,
+		runValidators: true
+	});
+
+	if (!lead) throw new NotFoundError("Lead not found");
+	res.status(200).json({ success: true, data: lead });
+});
+
+// 9. Delete Functions
+const deleteLead = asyncWrapper(async (req, res) => {
+	const lead = await Lead.findByIdAndDelete(req.params.id);
+	if (!lead) throw new NotFoundError("Lead not found");
+	res.status(200).json({ success: true, message: "Lead Deleted" });
+});
+
+const deleteAllLeads = asyncWrapper(async (req, res) => {
+	if (req.user.role !== "admin") throw new UnauthenticatedError("Only Admin can wipe database");
+	await Lead.deleteMany({});
+	res.status(200).json({ success: true, message: "Database Cleared" });
+});
+
+const getSingleLead = asyncWrapper(async (req, res) => {
+	const lead = await Lead.findById(req.params.id).populate("assignedTo", "name");
+	if (!lead) throw new NotFoundError("Lead not found");
+	res.status(200).json({ success: true, data: lead });
+});
 
 module.exports = {
 	createLead,
 	getLeads,
-	getLeadsByDate,
 	getSingleLead,
 	updateLead,
 	deleteLead,
-	updateLeadStatus,
+	deleteAllLeads,
+	convertLeadToSale,
 	getAllLeads,
 	getLeadsByCSR,
+	getLeadsByDate,
+	bulkInsertLeads
 };
