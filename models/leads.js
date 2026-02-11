@@ -1,83 +1,47 @@
 const mongoose = require("mongoose");
 
-const leadSchema = new mongoose.Schema(
+const saleSchema = new mongoose.Schema(
 	{
-		name: {
-			type: String,
-			required: [true, "Lead name is required"],
-			minlength: [2, "Name must be at least 2 characters"],
-			trim: true,
+		lead: {
+			type: mongoose.Schema.Types.ObjectId,
+			ref: "Leads",
+			required: [true, "Sale must be linked to a lead"],
 		},
-		phone: {
-			type: String,
-			required: [true, "Phone number is required"],
-			minlength: [10, "Phone number must be at least 10 digits"],
-			trim: true,
+		csr: {
+			type: mongoose.Schema.Types.ObjectId,
+			ref: "User",
+			required: [true, "CSR information is required for sales tracking"],
 		},
+		amount: {
+			type: Number,
+			required: [true, "Please provide sale amount"],
+			min: [0, "Sale amount cannot be negative"]
+		},
+		// NEW: Course copy kar rahe hain Lead se taake agar lead delete bhi ho jaye, 
+		// toh sales record mein data rahe (Data Integrity)
 		course: {
 			type: String,
-			required: [true, "Course name is required"],
-			trim: true,
-		},
-		city: {
-			type: String,
-			trim: true,
-			default: "Unknown",
-		},
-		source: {
-			type: String,
-			default: "manual",
-		},
-		assignedTo: {
-			type: mongoose.Schema.Types.ObjectId,
-			ref: "User",
-			required: [true, "A lead must be assigned to a CSR"],
-		},
-		createdBy: {
-			type: mongoose.Schema.Types.ObjectId,
-			ref: "User",
-			required: [true, "Creator ID is required"],
+			required: true,
+			trim: true
 		},
 		status: {
 			type: String,
-			lowercase: true,
-			trim: true,
-			enum: {
-				values: [
-					"new",
-					"contacted",
-					"interested",
-					"converted",
-					"sale",
-					"rejected",
-					"follow-up",
-					"paid",
-					"not pick",
-					"busy",
-					"wrong number"
-				],
-				message: "{VALUE} is not a supported status"
-			},
-			default: "new",
+			enum: ["completed", "pending", "refunded", "cancelled"],
+			default: "completed",
 		},
-		followUpDate: {
-			type: Date,
+		// NEW: Kis admin ne sale verify ki?
+		verifiedBy: {
+			type: mongoose.Schema.Types.ObjectId,
+			ref: "User",
+		},
+		// NEW: Payment method (e.g., Bank Transfer, Cash, EasyPaisa)
+		paymentMethod: {
+			type: String,
+			default: "Bank Transfer"
 		},
 		remarks: {
 			type: String,
-			trim: true,
-		},
-		saleAmount: {
-			type: Number,
-			default: 0,
-			min: [0, "Sale amount cannot be negative"]
-		},
-		convertedAt: {
-			type: Date,
-		},
-		lastUpdatedBy: {
-			type: mongoose.Schema.Types.ObjectId,
-			ref: "User",
+			trim: true
 		}
 	},
 	{
@@ -88,53 +52,12 @@ const leadSchema = new mongoose.Schema(
 );
 
 /* ===================== INDEXING ===================== */
-leadSchema.index({ name: 'text', phone: 'text' });
-leadSchema.index({ assignedTo: 1, status: 1 });
-leadSchema.index({ createdAt: -1 });
+// Performance behtar karne ke liye
+saleSchema.index({ csr: 1, createdAt: -1 });
+saleSchema.index({ lead: 1 });
 
 /* ===================== VIRTUALS ===================== */
-leadSchema.virtual("saleDetails", {
-	ref: "Sale",
-	localField: "_id",
-	foreignField: "lead",
-	justOne: true,
-});
+// Profit calculation ke liye virtual field use ki ja sakti hai (If needed)
 
-/* ===================== MIDDLEWARE ===================== */
-
-// Save hook (Lead create karte waqt chalta hai)
-leadSchema.pre('save', async function () {
-	if (this.isModified('status')) {
-		const currentStatus = this.status ? this.status.toLowerCase() : '';
-		if (currentStatus === 'sale' || currentStatus === 'paid') {
-			this.convertedAt = Date.now();
-		}
-	}
-	// Async function mein next() ki zaroorat nahi hoti
-});
-
-// Update hook (PATCH request ke liye)
-// Humne 'next' hata diya hai aur 'async' add kiya hai taake error na aaye
-leadSchema.pre('findOneAndUpdate', async function () {
-	const update = this.getUpdate();
-
-	if (!update) return;
-
-	// Check if status is being updated
-	const newStatus = update.status || (update.$set && update.$set.status);
-
-	if (newStatus) {
-		const normalizedStatus = newStatus.toLowerCase();
-		if (normalizedStatus === 'sale' || normalizedStatus === 'paid') {
-			// Hum directly query par set kar rahe hain
-			this.set({ convertedAt: Date.now() });
-		}
-	}
-
-	// Updated at hamesha set hoga
-	this.set({ updatedAt: Date.now() });
-});
-
-// Model Export
-const Leads = mongoose.models.Leads || mongoose.model("Leads", leadSchema);
-module.exports = Leads;
+const Sale = mongoose.models.Sale || mongoose.model("Sale", saleSchema);
+module.exports = Sale;
